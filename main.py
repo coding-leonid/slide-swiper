@@ -2,18 +2,34 @@ import cv2
 import mediapipe as mp
 import pyautogui
 import time
+import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
+from collections import deque
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
 mp_draw = mp.solutions.drawing_utils
 
-# Track the previous position of the hand landmarks and timing
-last_swipe_time = 0
-previous_state = None
-previous_y = None
-initial_index_x = None
-state_confirmed = False
+# Initialize Matplotlib for real-time plotting
+plt.ion()
+fig, ax = plt.subplots()
+ax.set_xlabel("Frames")
+ax.set_ylabel("Variance")
+ax.set_title("Variance of Hand Landmark Positions")
+right_line, = ax.plot([], [], 'r-', label="Right Hand")
+left_line, = ax.plot([], [], 'b-', label="Left Hand")
+ax.legend()
+#plt.show(block=False)
+
+# Data storage
+frame_count = 0
+max_frames = 100
+right_history = deque(maxlen=max_frames)
+left_history = deque(maxlen=max_frames)
+frames = deque(range(max_frames), maxlen=max_frames)
 
 # Start capturing video
 cap = cv2.VideoCapture(0)
@@ -27,61 +43,51 @@ while True:
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     results = hands.process(rgb_frame)
 
+    right_dist, left_dist = 0, 0
+
     if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            # Draw hand landmarks
+        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+            
+            # Compute distance between thumb and middle finger
+            thumb_pos = np.array([
+                hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].x,
+                hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].y
+            ])
+            pinky_pos = np.array([
+                hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP].x,
+                hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP].y
+            ])
+            
+            dist = np.linalg.norm(thumb_pos - pinky_pos)
 
-            # Get the x-coordinates and y-coordinates of the index finger tip and thumb tip
-            index_x = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].x * frame.shape[1]
-            index_y = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP].y * frame.shape[0]
-            thumb_x = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].x * frame.shape[1]
-
-            # Initialize the starting position of the index finger
-            if initial_index_x is None:
-                initial_index_x = index_x
-
-            # Determine current state based on the relative position of index and thumb
-            if index_x > thumb_x + 50:
-                current_state = "left"
-            elif index_x < thumb_x - 50:
-                current_state = "right"
+            # Determine left or right hand
+            label = handedness.classification[0].label  # "Left" or "Right"
+            if label == "Right":
+                right_dist = dist
             else:
-                current_state = None
+                left_dist = dist
 
-            # Confirm the state only if it's stable (no immediate change)
-            if current_state and current_state != previous_state:
-                if not state_confirmed:
-                    state_confirmed = True
-                    initial_index_x = index_x  # Set initial position for movement check
-                else:
-                    # Check movement length for swipe
-                    movement_length = abs(index_x - initial_index_x)
-                    if movement_length > 100:  # Minimum length threshold
-                        if current_state == "left":
-                            print("Left swipe detected!")
-                            pyautogui.press("left")
-                        elif current_state == "right":
-                            print("Right swipe detected!")
-                            pyautogui.press("right")
+    # Update data history
+    frames.append(frame_count)  # Ensure frames always grows
+    right_history.append(right_dist)  
+    left_history.append(left_dist)  
 
-                        last_swipe_time = time.time()
-                        state_confirmed = False  # Reset confirmation after swipe
+    # Ensure all lists are the same length
+    while len(right_history) < len(frames):
+        right_history.append(0)  # Fill missing values with 0
+    while len(left_history) < len(frames):
+        left_history.append(0)
 
-            # Reset to neutral if the hand moves far enough vertically
-            if previous_y is not None and abs(index_y - previous_y) > 100:
-                print("State reset to neutral due to vertical movement.")
-                current_state = None
-                state_confirmed = False
-                initial_index_x = None
+    # Update plot
+    right_line.set_data(frames, right_history)
+    left_line.set_data(frames, left_history)
+    ax.relim()
+    ax.autoscale_view()
+    plt.draw()
+    plt.pause(0.001)
 
-            # Update previous state and y-coordinate
-            previous_state = current_state
-            previous_y = index_y
-
-            # Display the current state on the frame
-            state_label = current_state if state_confirmed else "neutral"
-            cv2.putText(frame, f"State: {state_label}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+    frame_count += 1
 
     # Show the video feed
     cv2.imshow("Hand Tracking", frame)
@@ -92,3 +98,4 @@ while True:
 
 cap.release()
 cv2.destroyAllWindows()
+plt.close("all")
