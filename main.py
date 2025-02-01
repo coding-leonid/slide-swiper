@@ -1,101 +1,72 @@
 import cv2
-import mediapipe as mp
 import pyautogui
-import time
-import numpy as np
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
-from collections import deque
+from cvzone.HandTrackingModule import HandDetector
 
-# Initialize MediaPipe Hands
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
-mp_draw = mp.solutions.drawing_utils
+# Variables
+width, height = 1280, 720
+gesture_threshold = 300
+pressed_delay = 10
+pressed_left, pressed_right = False, False
+left_counter, right_counter = 0, 0
 
-# Initialize Matplotlib for real-time plotting
-plt.ion()
-fig, ax = plt.subplots()
-ax.set_xlabel("Frames")
-ax.set_ylabel("Variance")
-ax.set_title("Variance of Hand Landmark Positions")
-right_line, = ax.plot([], [], 'r-', label="Right Hand")
-left_line, = ax.plot([], [], 'b-', label="Left Hand")
-ax.legend()
-#plt.show(block=False)
+# Hand detector
+detector = HandDetector(detectionCon=0.8, maxHands=2)
 
-# Data storage
-frame_count = 0
-max_frames = 100
-right_history = deque(maxlen=max_frames)
-left_history = deque(maxlen=max_frames)
-frames = deque(range(max_frames), maxlen=max_frames)
-
-# Start capturing video
+# Camera setup
 cap = cv2.VideoCapture(0)
+cap.set(3, width)
+cap.set(4, height)
+
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    success, img = cap.read()
+    #img = cv2.flip(img, 1)
+    hands, img = detector.findHands(img)
+    cv2.line(img, (0, gesture_threshold), (width, gesture_threshold), (0, 255, 0), 10)
 
-    # Flip the frame and convert to RGB
-    frame = cv2.flip(frame, 1)
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(rgb_frame)
+    if hands:
+        # Kind of an ugly fix, will not work when there are multiple people
+        hand = None
+        for h in hands:
+            if h["type"] == "Right":
+                hand = h
+                break
+        if hand:
+            fingers = detector.fingersUp(hand)
+            cx, cy = hand["center"]
+            # If hand is at face level
+            if cy <= gesture_threshold:
+                # Gesture 1 - Left
+                if fingers[1:] == [1, 0, 0, 0] and not pressed_left:
+                    print("Left")
+                    pyautogui.press("left")
+                    pressed_left = True
 
-    right_dist, left_dist = 0, 0
+                # Gesture 2 - Right
+                if fingers[1:] == [0, 0, 0, 1] and not pressed_right:
+                    print("Right")
+                    pyautogui.press("right")
+                    pressed_right = True
 
-    if results.multi_hand_landmarks:
-        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-            
-            # Compute distance between thumb and middle finger
-            thumb_pos = np.array([
-                hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].x,
-                hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP].y
-            ])
-            pinky_pos = np.array([
-                hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP].x,
-                hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_TIP].y
-            ])
-            
-            dist = np.linalg.norm(thumb_pos - pinky_pos)
+    # Button pressed cooldown
+    if pressed_left:
+        if left_counter < pressed_delay:
+            left_counter += 1
+        else:
+            left_counter = 0
+            pressed_left = False
 
-            # Determine left or right hand
-            label = handedness.classification[0].label  # "Left" or "Right"
-            if label == "Right":
-                right_dist = dist
-            else:
-                left_dist = dist
+    if pressed_right:
+        if right_counter < pressed_delay:
+            right_counter += 1
+        else:
+            right_counter = 0
+            pressed_right = False
 
-    # Update data history
-    frames.append(frame_count)  # Ensure frames always grows
-    right_history.append(right_dist)  
-    left_history.append(left_dist)  
+    cv2.imshow("Image", img)
 
-    # Ensure all lists are the same length
-    while len(right_history) < len(frames):
-        right_history.append(0)  # Fill missing values with 0
-    while len(left_history) < len(frames):
-        left_history.append(0)
-
-    # Update plot
-    right_line.set_data(frames, right_history)
-    left_line.set_data(frames, left_history)
-    ax.relim()
-    ax.autoscale_view()
-    plt.draw()
-    plt.pause(0.001)
-
-    frame_count += 1
-
-    # Show the video feed
-    cv2.imshow("Hand Tracking", frame)
-
-    # Break on 'q' key
-    if cv2.waitKey(1) & 0xFF == ord("q"):
+    key = cv2.waitKey(1)
+    if key == ord("q"):
         break
 
 cap.release()
 cv2.destroyAllWindows()
-plt.close("all")
